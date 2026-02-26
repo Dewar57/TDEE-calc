@@ -1,0 +1,169 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
+    <meta name="apple-mobile-web-app-capable" content="yes">
+    <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
+    <title>Adaptive TDEE</title>
+    <style>
+        :root { --bg: #121212; --card: #1e1e1e; --text: #ffffff; --accent: #0a84ff; }
+        body { font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Helvetica, Arial, sans-serif; background-color: var(--bg); color: var(--text); margin: 0; padding: 20px; text-align: center; }
+        h1 { font-size: 24px; margin-bottom: 5px; }
+        .dashboard { background: var(--card); border-radius: 12px; padding: 20px; margin-bottom: 20px; box-shadow: 0 4px 6px rgba(0,0,0,0.3); }
+        .tdee-highlight { font-size: 36px; font-weight: bold; color: var(--accent); margin: 10px 0; }
+        input { width: calc(100% - 24px); padding: 12px; margin: 8px 0; border-radius: 8px; border: 1px solid #333; background: #2a2a2a; color: white; font-size: 16px; }
+        button { width: 100%; padding: 14px; background-color: var(--accent); color: white; border: none; border-radius: 8px; font-size: 16px; font-weight: bold; cursor: pointer; margin-top: 10px; }
+        button:active { opacity: 0.8; }
+        .table-container { overflow-x: auto; margin-top: 20px; }
+        table { width: 100%; border-collapse: collapse; font-size: 14px; text-align: center; }
+        th, td { padding: 10px; border-bottom: 1px solid #333; }
+        th { color: #888; font-weight: normal; }
+    </style>
+</head>
+<body>
+
+    <h1>Adaptive TDEE</h1>
+    
+    <div class="dashboard">
+        <p style="margin:0; color:#888;">Current Estimated TDEE</p>
+        <div class="tdee-highlight" id="displayTdee">--- kcal</div>
+        <p style="margin:0; font-size:14px; color:#888;">Trend Weight: <span id="displayTrendWt">---</span> lbs</p>
+    </div>
+
+    <div class="dashboard">
+        <input type="date" id="dateInput" required>
+        <input type="number" id="weightInput" placeholder="Morning Weight (lbs)" step="0.1" required>
+        <input type="number" id="calInput" placeholder="Calories Eaten (Leave blank if missed)">
+        <button onclick="logData()">Log Daily Data</button>
+    </div>
+
+    <div class="table-container">
+        <table>
+            <thead>
+                <tr>
+                    <th>Date</th>
+                    <th>Scale Wt</th>
+                    <th>Cals</th>
+                    <th>Trend Wt</th>
+                    <th>TDEE</th>
+                </tr>
+            </thead>
+            <tbody id="historyTable">
+                </tbody>
+        </table>
+    </div>
+
+    <script>
+        // 1. Load data from iOS Local Storage
+        let logs = JSON.parse(localStorage.getItem('tdeeLogs')) || [];
+
+        // Set today's date automatically in the input
+        document.getElementById('dateInput').valueAsDate = new Date();
+
+        // 2. The Core Math Logic
+        function calculateAlgorithm() {
+            // Sort by date from oldest to newest
+            logs.sort((a, b) => new Date(a.date) - new Date(b.date));
+
+            for (let i = 0; i < logs.length; i++) {
+                let current = logs[i];
+                
+                // Handle missing calories: Use median of last 7 days if blank
+                let effectiveCal = current.cal;
+                if (!effectiveCal && i > 0) {
+                    let pastCals = logs.slice(Math.max(0, i-7), i).map(l => l.effectiveCal).filter(c => c > 0);
+                    if (pastCals.length > 0) {
+                        pastCals.sort((a,b) => a - b);
+                        effectiveCal = pastCals[Math.floor(pastCals.length / 2)]; // Median
+                    } else {
+                        effectiveCal = 2000; // Fallback baseline
+                    }
+                }
+                current.effectiveCal = parseFloat(effectiveCal) || 0;
+
+                // First day baseline setup
+                if (i === 0) {
+                    current.trendWt = current.wt;
+                    current.trendCal = current.effectiveCal;
+                    current.tdee = null;
+                } else {
+                    // Exponential Moving Average (10% today, 90% history)
+                    let prev = logs[i-1];
+                    current.trendWt = (current.wt * 0.1) + (prev.trendWt * 0.9);
+                    current.trendCal = (current.effectiveCal * 0.1) + (prev.trendCal * 0.9);
+
+                    // Calculate TDEE if we have at least 7 days of history
+                    if (i >= 7) {
+                        let wtDiff = current.trendWt - logs[i-7].trendWt; // Change over last week
+                        let dailyWtChange = wtDiff / 7;
+                        // 3500 kcal per lb of tissue. (Change to 7700 if using KGs)
+                        current.tdee = current.trendCal - (dailyWtChange * 3500); 
+                    } else {
+                        current.tdee = null;
+                    }
+                }
+            }
+            renderUI();
+        }
+
+        // 3. Save User Input
+        function logData() {
+            const date = document.getElementById('dateInput').value;
+            const wt = parseFloat(document.getElementById('weightInput').value);
+            const cal = document.getElementById('calInput').value ? parseFloat(document.getElementById('calInput').value) : null;
+
+            if (!date || isNaN(wt)) { alert("Please enter at least the date and weight."); return; }
+
+            // Update if date exists, else push new
+            const existingIndex = logs.findIndex(l => l.date === date);
+            if (existingIndex > -1) {
+                logs[existingIndex].wt = wt;
+                logs[existingIndex].cal = cal;
+            } else {
+                logs.push({ date: date, wt: wt, cal: cal });
+            }
+
+            localStorage.setItem('tdeeLogs', JSON.stringify(logs));
+            document.getElementById('weightInput').value = '';
+            document.getElementById('calInput').value = '';
+            calculateAlgorithm();
+        }
+
+        // 4. Update the Screen
+        function renderUI() {
+            const tbody = document.getElementById('historyTable');
+            tbody.innerHTML = '';
+            
+            if (logs.length === 0) return;
+
+            // Update Top Dashboard
+            const latest = logs[logs.length - 1];
+            document.getElementById('displayTrendWt').innerText = latest.trendWt.toFixed(1);
+            
+            if (latest.tdee) {
+                document.getElementById('displayTdee').innerText = Math.round(latest.tdee) + " kcal";
+            } else {
+                document.getElementById('displayTdee').innerText = "Need " + (8 - logs.length) + " more days";
+            }
+
+            // Populate Table (Newest first)
+            let reversedLogs = [...logs].reverse();
+            reversedLogs.forEach(log => {
+                let tr = document.createElement('tr');
+                tr.innerHTML = `
+                    <td>${log.date.substring(5)}</td>
+                    <td>${log.wt}</td>
+                    <td>${log.cal || '-'}</td>
+                    <td>${log.trendWt.toFixed(1)}</td>
+                    <td>${log.tdee ? Math.round(log.tdee) : '-'}</td>
+                `;
+                tbody.appendChild(tr);
+            });
+        }
+
+        // Run on load
+        calculateAlgorithm();
+    </script>
+</body>
+</html>
